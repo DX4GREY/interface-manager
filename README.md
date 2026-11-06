@@ -25,6 +25,9 @@ The tool incorporates automated **Driver Risk Profiling** to protect the host op
 3. **Prevention of Active Station Channel Desynchronization:**  
    Forcing a channel change (`iw dev <iface> set channel <ch>`) while an interface is actively associated with an Access Point causes `mac80211` state desynchronization and driver timeouts. The tool validates association state prior to channel switching.
 
+4. **System Truth & Telemetry Engine (Kernel Diagnostic Explanations):**  
+   Whenever an nl80211 or rtnetlink command encounters an error (such as `-EBUSY`, `-EINVAL`, `-EOPNOTSUPP`), the utility automatically captures the kernel ring buffer (`dmesg`) delta and analyzes the root cause in context. Instead of generic exit codes, it explains the exact subsystem behavior and outputs actionable remediation steps.
+
 ---
 
 ## Key Features

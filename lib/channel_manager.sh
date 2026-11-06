@@ -79,10 +79,13 @@ set_vif_channel() {
 
     log_info "Configuring $iface on Channel $channel ($width)..."
 
+    record_dmesg_checkpoint
     local cmd_res
+    local executed_cmd="iw dev $iface set channel $channel"
     if [ "$width" = "NOHT" ] || [ -z "$width" ]; then
         cmd_res=$(iw dev "$iface" set channel "$channel" 2>&1)
     else
+        executed_cmd="iw dev $iface set channel $channel $width"
         cmd_res=$(iw dev "$iface" set channel "$channel" "$width" 2>&1)
     fi
 
@@ -97,11 +100,8 @@ set_vif_channel() {
             return 0
         fi
 
-        log_err "Failed to tune channel on $iface: $cmd_res"
-        if is_qcacld_driver "$iface"; then
-            log_sub "qcacld-3.0 Note:"
-            log_sub "- If error -22 (-EINVAL) occurs, verify that adapter monitor vdev up event has been reinitialized."
-        fi
+        log_err "Failed to tune channel on $iface."
+        explain_system_error "$executed_cmd" "$err" "$cmd_res" "$iface" "channel_set"
         return 1
     fi
 }

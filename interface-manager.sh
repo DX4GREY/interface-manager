@@ -12,6 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/colors.sh"
 # shellcheck source=lib/utils.sh
 source "$SCRIPT_DIR/lib/utils.sh"
+# shellcheck source=lib/diagnostics.sh
+source "$SCRIPT_DIR/lib/diagnostics.sh"
 # shellcheck source=lib/qcacld_helper.sh
 source "$SCRIPT_DIR/lib/qcacld_helper.sh"
 # shellcheck source=lib/phy_detect.sh

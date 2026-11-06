@@ -135,10 +135,13 @@ check_frame_injection() {
         iw dev "$iface" set channel 1 2>/dev/null || true
     fi
 
-    # Tier 3: Network Stats Baseline
-    local stat_rx_before stat_tx_before
+    # Tier 3: Network Stats Baseline & Checkpoint
+    record_dmesg_checkpoint
+    local stat_rx_before stat_tx_before stat_tx_dropped_before stat_rx_dropped_before
     stat_rx_before=$(cat "/sys/class/net/$iface/statistics/rx_packets" 2>/dev/null || echo 0)
     stat_tx_before=$(cat "/sys/class/net/$iface/statistics/tx_packets" 2>/dev/null || echo 0)
+    stat_tx_dropped_before=$(cat "/sys/class/net/$iface/statistics/tx_dropped" 2>/dev/null || echo 0)
+    stat_rx_dropped_before=$(cat "/sys/class/net/$iface/statistics/rx_dropped" 2>/dev/null || echo 0)
 
     local test_success=false
     local ap_replied=false
@@ -197,16 +200,31 @@ PYEOF
 
     # Read stats delta
     sleep 1
-    local stat_rx_after stat_tx_after
+    local stat_rx_after stat_tx_after stat_tx_dropped_after stat_rx_dropped_after
     stat_rx_after=$(cat "/sys/class/net/$iface/statistics/rx_packets" 2>/dev/null || echo 0)
     stat_tx_after=$(cat "/sys/class/net/$iface/statistics/tx_packets" 2>/dev/null || echo 0)
+    stat_tx_dropped_after=$(cat "/sys/class/net/$iface/statistics/tx_dropped" 2>/dev/null || echo 0)
+    stat_rx_dropped_after=$(cat "/sys/class/net/$iface/statistics/rx_dropped" 2>/dev/null || echo 0)
 
     local tx_delta=$((stat_tx_after - stat_tx_before))
     local rx_delta=$((stat_rx_after - stat_rx_before))
+    local tx_dropped_delta=$((stat_tx_dropped_after - stat_tx_dropped_before))
+    local rx_dropped_delta=$((stat_rx_dropped_after - stat_rx_dropped_before))
+
+    local dmesg_inj_delta
+    dmesg_inj_delta=$(get_dmesg_delta)
 
     # Tier 5: Health & Duplex Diagnostic Summary
-    print_header "Diagnostic Capability Summary"
-    printf "  ${COLOR_BOLD}Driver Telemetry:${COLOR_RESET} TX Delta: ${COLOR_GREEN}+%d packets${COLOR_RESET} | RX Delta: ${COLOR_CYAN}+%d packets${COLOR_RESET}\n" "$tx_delta" "$rx_delta"
+    print_header "Diagnostic Capability Summary & System Telemetry"
+    printf "  ${COLOR_BOLD}Hardware Counters:${COLOR_RESET} TX Delta: ${COLOR_GREEN}+%d pkts${COLOR_RESET} | RX Delta: ${COLOR_CYAN}+%d pkts${COLOR_RESET} | Drops: [TX: +%d, RX: +%d]\n" \
+        "$tx_delta" "$rx_delta" "$tx_dropped_delta" "$rx_dropped_delta"
+
+    if [ -n "$dmesg_inj_delta" ]; then
+        printf "  ${COLOR_BOLD}Kernel Activity Log:${COLOR_RESET}\n"
+        while IFS= read -r kmsg; do
+            [ -n "$kmsg" ] && printf "    ${COLOR_YELLOW}%s${COLOR_RESET}\n" "$kmsg"
+        done <<< "$dmesg_inj_delta"
+    fi
 
     if [ "$test_success" = true ] && [ "$rx_delta" -gt 0 ]; then
         printf "\n  ${COLOR_BOLD}Capability Rating:${COLOR_RESET} ${COLOR_GREEN}[ GRADE A+ : FULL DUPLEX ]${COLOR_RESET}\n"

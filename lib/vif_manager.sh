@@ -4,7 +4,7 @@
 list_phy_vifs() {
     local phy="$1"
     
-    printf "%-12s %-10s %-18s %-8s %-16s %-10s\n" "INTERFACE" "TYPE" "MAC ADDRESS" "STATE" "CHANNEL/FREQ" "MANAGER"
+    printf "%-10s %-9s %-18s %-6s %-7s %-15s %-9s %-10s\n" "INTERFACE" "TYPE" "MAC ADDRESS" "STATE" "CARRIER" "CHANNEL/FREQ" "TX-PWR" "MANAGER"
     print_divider
 
     local current_phy=""
@@ -14,6 +14,8 @@ list_phy_vifs() {
     local channel="-"
     local state="DOWN"
     local manager="unmanaged"
+    local carrier="no"
+    local txpwr="-"
 
     # Search all sysfs interfaces matching phy
     local iface_list=()
@@ -41,6 +43,12 @@ list_phy_vifs() {
     # Deduplicate
     local unique_ifaces=($(printf "%s\n" "${iface_list[@]}" | sort -u))
 
+    if [ ${#unique_ifaces[@]} -eq 0 ]; then
+        printf "${COLOR_YELLOW}[!] Headless Wireless Radio:${COLOR_RESET} Hardware %s is detected, but has NO network interfaces bound.\n" "$phy"
+        printf "    ↳ Use menu option 1 or 2 to instantiate a virtual interface.\n"
+        return
+    fi
+
     for iface in "${unique_ifaces[@]}"; do
         [ -z "$iface" ] && continue
         type=$(iw dev "$iface" info 2>/dev/null | awk '/type/ {print $2}')
@@ -49,11 +57,23 @@ list_phy_vifs() {
         state="DOWN"
         [ "$(cat "/sys/class/net/$iface/operstate" 2>/dev/null)" = "up" ] && state="UP"
 
-        local ch_num freq_mhz
+        carrier="no"
+        [ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)" = "1" ] && carrier="yes"
+
+        txpwr=$(iw dev "$iface" info 2>/dev/null | awk '/txpower/ {print $2, $3}')
+        [ -z "$txpwr" ] && txpwr="auto"
+
+        local ch_num freq_mhz width_mhz
         ch_num=$(iw dev "$iface" info 2>/dev/null | awk '/channel/ {print $2}')
         freq_mhz=$(iw dev "$iface" info 2>/dev/null | awk '/channel/ {match($0, /\([0-9]+ MHz\)/); if (RSTART>0) print substr($0, RSTART+1, RLENGTH-5)}')
+        width_mhz=$(iw dev "$iface" info 2>/dev/null | awk '/channel/ {match($0, /width: [0-9]+ MHz/); if (RSTART>0) print substr($0, RSTART+7, RLENGTH-11)}')
+
         if [ -n "$ch_num" ]; then
-            channel="ch ${ch_num} (${freq_mhz}M)"
+            if [ -n "$width_mhz" ]; then
+                channel="ch ${ch_num} (${width_mhz}M)"
+            else
+                channel="ch ${ch_num} (${freq_mhz}M)"
+            fi
         else
             channel="-"
         fi
@@ -68,7 +88,7 @@ list_phy_vifs() {
             manager="wpa_supp"
         fi
 
-        printf "%-12s %-10s %-18s %-8s %-16s %-10s\n" "$iface" "$type" "$addr" "$state" "$channel" "$manager"
+        printf "%-10s %-9s %-18s %-6s %-7s %-15s %-9s %-10s\n" "$iface" "$type" "$addr" "$state" "$carrier" "$channel" "$txpwr" "$manager"
     done
 }
 
@@ -190,19 +210,26 @@ add_vif() {
     done
 
     local success=false
+    local last_err=""
+    local last_cmd=""
 
+    record_dmesg_checkpoint
     # Try 1: via base interface
     if [ -n "$base_iface" ]; then
-        log_sub "Attempting creation via 'iw dev $base_iface interface add $name type $type'..."
-        if iw dev "$base_iface" interface add "$name" type "$type" 2>/dev/null; then
+        last_cmd="iw dev $base_iface interface add $name type $type"
+        log_sub "Attempting creation via '$last_cmd'..."
+        last_err=$($last_cmd 2>&1)
+        if [ $? -eq 0 ]; then
             success=true
         fi
     fi
 
     # Try 2: via phy directly
     if [ "$success" = false ]; then
-        log_sub "Attempting creation via 'iw phy $phy interface add $name type $type'..."
-        if iw phy "$phy" interface add "$name" type "$type" 2>/dev/null; then
+        last_cmd="iw phy $phy interface add $name type $type"
+        log_sub "Attempting creation via '$last_cmd'..."
+        last_err=$($last_cmd 2>&1)
+        if [ $? -eq 0 ]; then
             success=true
         fi
     fi
@@ -221,8 +248,8 @@ add_vif() {
         fi
         return 0
     else
-        log_err "Failed to instantiate virtual interface $name!"
-        log_sub "Driver rejected VIF creation under current hardware state."
+        log_err "Failed to instantiate virtual interface $name."
+        explain_system_error "$last_cmd" "1" "$last_err" "$base_iface" "vif_add"
         return 1
     fi
 }
@@ -277,16 +304,19 @@ switch_vif_mode() {
     unblock_rfkill
 
     # Step 3: Switch mode
+    record_dmesg_checkpoint
     log_sub "Executing 'iw dev $iface set type $new_mode'..."
-    if ! iw dev "$iface" set type "$new_mode" 2>/dev/null; then
-        log_warn "Initial attempt rejected. Retrying with link-layer reset..."
+    local switch_err
+    switch_err=$(iw dev "$iface" set type "$new_mode" 2>&1)
+    if [ $? -ne 0 ]; then
+        log_warn "Initial attempt rejected: $switch_err. Retrying with link-layer reset..."
         ip link set dev "$iface" down 2>/dev/null
         sleep 0.2
-        if ! iw dev "$iface" set type "$new_mode" 2>/dev/null; then
+        switch_err=$(iw dev "$iface" set type "$new_mode" 2>&1)
+        local err_code=$?
+        if [ $err_code -ne 0 ]; then
             log_err "Driver rejected direct mode transition on $iface."
-            if is_qcacld_driver "$iface"; then
-                log_sub "qcacld-3.0 Tip: Use separate 'mon0' VIF allocation or initialize with con_mode=4."
-            fi
+            explain_system_error "iw dev $iface set type $new_mode" "$err_code" "$switch_err" "$iface" "mode_switch"
             set_interface_state "$iface" up
             return 1
         fi
